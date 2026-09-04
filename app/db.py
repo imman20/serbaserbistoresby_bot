@@ -178,6 +178,20 @@ async def available_stock(product_id: int) -> int:
     return int(n)
 
 
+async def stock_counts(product_id: int) -> tuple[int, int]:
+    """(tersedia, total) stok yang pernah ditambahkan untuk sebuah produk."""
+    db = await connect()
+    async with db.execute(
+        "SELECT status, COUNT(*) AS n FROM stock_items WHERE product_id=? GROUP BY status",
+        (product_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    counts = {r["status"]: r["n"] for r in rows}
+    available = counts.get("available", 0)
+    total = sum(counts.values())
+    return available, total
+
+
 async def add_stock(product_id: int, payloads: list[str]) -> int:
     db = await connect()
     ts = now()

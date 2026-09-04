@@ -37,6 +37,14 @@ class Config:
     order_expiry_minutes: int = _int("ORDER_EXPIRY_MINUTES", 15)
     db_path: str = os.getenv("DB_PATH", "bot.db")
 
+    # Channel notifikasi penjualan (opsional). Isi dengan @username channel
+    # atau chat id (mis. -1001234567890). Bot harus jadi admin di channel itu.
+    sales_channel_id: str = os.getenv("SALES_CHANNEL_ID", "").strip()
+
+    # Wajib join channel ini sebelum bisa pakai bot (opsional). Isi @username
+    # channel publik. Bot harus jadi admin/anggota di channel itu.
+    required_channel: str = os.getenv("REQUIRED_CHANNEL", "").strip()
+
     def validate(self) -> None:
         missing = [
             key
@@ -51,6 +59,12 @@ class Config:
             raise SystemExit(f"Env belum lengkap: {', '.join(missing)} (lihat .env.example)")
         if not self.admin_ids:
             raise SystemExit("ADMIN_IDS wajib diisi minimal satu ID.")
+
+    @property
+    def required_channel_url(self) -> str:
+        """Link t.me untuk tombol 'Join Channel' (hanya untuk channel @username publik)."""
+        c = self.required_channel
+        return f"https://t.me/{c.lstrip('@')}" if c.startswith("@") else ""
 
     def hosted_pay_url(self, order_id: str, amount: int) -> str:
         return (

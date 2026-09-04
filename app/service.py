@@ -4,7 +4,7 @@ from __future__ import annotations
 import io
 import logging
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import qrcode
 from telegram import LinkPreviewOptions
@@ -17,6 +17,13 @@ from .pakasir import PakasirClient
 
 log = logging.getLogger(__name__)
 
+_WIB = timezone(timedelta(hours=7))
+_HARI = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
+_BULAN = [
+    "", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+    "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+]
+
 
 def gen_order_id() -> str:
     return datetime.now().strftime("%y%m%d") + secrets.token_hex(4).upper()
@@ -24,6 +31,16 @@ def gen_order_id() -> str:
 
 def rupiah(n: int) -> str:
     return "Rp" + f"{n:,}".replace(",", ".")
+
+
+def format_tanggal_wib(epoch: int) -> str:
+    """Format epoch UTC jadi 'Jumat, 04 September 2026 — 15:19 WIB'."""
+    dt = datetime.fromtimestamp(epoch, _WIB)
+    return f"{_HARI[dt.weekday()]}, {dt.day:02d} {_BULAN[dt.month]} {dt.year} — {dt.strftime('%H:%M')} WIB"
+
+
+def buyer_label(user_id: int, username: str) -> str:
+    return f"@{username}" if username else f"ID {user_id}"
 
 
 def qris_png(payload: str) -> io.BytesIO:
@@ -96,18 +113,29 @@ async def deliver_order(app: Application, order_id: str) -> bool:
     if not payloads and product["delivery_type"] == "file" and product["file_payload"]:
         payloads = [product["file_payload"]]
 
-    body = "\n".join(f"<code>{_esc(p)}</code>" for p in payloads) or "(hubungi admin — data kosong)"
-    text = (
-        f"✅ <b>Pembayaran diterima</b>\n"
-        f"Order <code>{order_id}</code> · {_esc(product['name'])}\n\n"
-        f"Berikut produk kamu:\n{body}\n\n"
-        f"Terima kasih! Simpan pesan ini."
+    # Tandai terkirim SEBELUM kirim pesan, supaya stok sudah 'sold' saat kita
+    # hitung sisa stok untuk notifikasi channel di bawah.
+    await db.mark_order_delivered(order_id)
+
+    tanggal = format_tanggal_wib(order["paid_at"] or db.now())
+    detail_lines = "\n".join(f"<code>{_esc(p)}</code>" for p in payloads) or "(hubungi admin — data kosong)"
+
+    buyer_text = (
+        f"📦 <b>PRODUK KAMU SUDAH SIAP!</b>\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"🧾 Order: <code>{order_id}</code>\n"
+        f"📦 Produk: {_esc(product['name'])}\n"
+        f"💰 Harga: {rupiah(order['amount'])}\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"🔑 Detail:\n{detail_lines}\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"📅 {tanggal}\n\n"
+        f"Terima kasih! Simpan pesan ini baik-baik 🙏"
     )
     await app.bot.send_message(
-        chat_id=order["user_id"], text=text, parse_mode=ParseMode.HTML,
+        chat_id=order["user_id"], text=buyer_text, parse_mode=ParseMode.HTML,
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
-    await db.mark_order_delivered(order_id)
 
     for admin_id in cfg.admin_ids:
         try:
@@ -121,7 +149,38 @@ async def deliver_order(app: Application, order_id: str) -> bool:
             )
         except Exception:  # noqa: BLE001
             pass
+
+    await _notify_sales_channel(app, order, product, tanggal)
     return True
+
+
+async def _notify_sales_channel(app: Application, order, product, tanggal: str) -> None:
+    """Kirim notifikasi penjualan ke channel (kalau SALES_CHANNEL_ID diisi)."""
+    if not cfg.sales_channel_id:
+        return
+    stok_line = ""
+    needs_stock = product["delivery_type"] in ("account", "voucher")
+    if needs_stock:
+        available, total = await db.stock_counts(product["id"])
+        stok_line = f"📦 Sisa Stok: {available} dari {total} pcs\n"
+
+    text = (
+        f"🎉 <b>Penjualan Baru</b> (QRIS Pakasir)\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"👤 Pembeli: {_esc(buyer_label(order['user_id'], order['username']))} "
+        f"(<code>{order['user_id']}</code>)\n"
+        f"📦 Produk: {_esc(product['name'])}\n"
+        f"🔢 Jumlah: {order['qty']}x\n"
+        f"💰 Total: {rupiah(order['amount'])}\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"📅 {tanggal}\n"
+        f"{stok_line}"
+        f"🆔 Order ID: <code>{order['order_id']}</code>"
+    )
+    try:
+        await app.bot.send_message(chat_id=cfg.sales_channel_id, text=text, parse_mode=ParseMode.HTML)
+    except Exception:  # noqa: BLE001
+        log.exception("Gagal kirim notifikasi ke SALES_CHANNEL_ID=%s", cfg.sales_channel_id)
 
 
 async def settle_if_paid(app: Application, pakasir: PakasirClient, order_id: str) -> str:

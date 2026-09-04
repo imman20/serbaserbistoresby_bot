@@ -10,6 +10,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -38,10 +39,83 @@ def _is_admin(update: Update) -> bool:
     return update.effective_user and update.effective_user.id in cfg.admin_ids
 
 
+async def _catalog_keyboard(products) -> InlineKeyboardMarkup:
+    rows = []
+    for p in products:
+        label = f"{p['name']} — {rupiah(p['price'])}"
+        if p["delivery_type"] in ("account", "voucher"):
+            stock = await db.available_stock(p["id"])
+            label += f" ({stock} stok)" if stock else " (habis)"
+        rows.append([InlineKeyboardButton(label, callback_data=f"view:{p['id']}")])
+    return InlineKeyboardMarkup(rows)
+
+
+# ── wajib join channel (opsional, aktif kalau REQUIRED_CHANNEL diisi) ────
+_JOINED_STATUSES = {"creator", "administrator", "member", "restricted"}
+
+
+async def _is_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    if not cfg.required_channel:
+        return True
+    try:
+        member = await context.bot.get_chat_member(cfg.required_channel, user_id)
+        return member.status in _JOINED_STATUSES
+    except TelegramError as e:
+        # Bot belum admin di channel / REQUIRED_CHANNEL salah — jangan kunci semua orang,
+        # cukup catat di log supaya admin sadar konfigurasinya belum benar.
+        log.warning("Tidak bisa cek keanggotaan %s untuk user %s: %s", cfg.required_channel, user_id, e)
+        return True
+
+
+def _join_keyboard() -> InlineKeyboardMarkup:
+    url = cfg.required_channel_url or f"https://t.me/{cfg.required_channel.lstrip('@')}"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Join Channel", url=url)],
+        [InlineKeyboardButton("✅ Saya sudah join", callback_data="checkjoin")],
+    ])
+
+
+async def _require_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """True kalau boleh lanjut. Kalau belum join, kirim ajakan join lalu return False."""
+    u = update.effective_user
+    if not cfg.required_channel or (u and u.id in cfg.admin_ids):
+        return True
+    if await _is_member(context, u.id):
+        return True
+    if update.callback_query:
+        await update.callback_query.answer()
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"Untuk memakai bot ini, join dulu channel {cfg.required_channel}, lalu tekan tombol di bawah.",
+        reply_markup=_join_keyboard(),
+    )
+    return False
+
+
+async def cb_checkjoin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    u = update.effective_user
+    if not await _is_member(context, u.id) and u.id not in cfg.admin_ids:
+        await q.answer("Belum terdeteksi join. Pastikan sudah join channel-nya, lalu coba lagi.", show_alert=True)
+        return
+    await q.answer("✅ Terverifikasi! Selamat berbelanja.", show_alert=True)
+    products = await db.list_products(only_active=True)
+    if not products:
+        await q.edit_message_text("Belum ada produk. Cek lagi nanti ya.")
+        return
+    await q.edit_message_text(
+        "🛒 <b>Katalog Produk</b>\nPilih produk:",
+        reply_markup=await _catalog_keyboard(products),
+        parse_mode=ParseMode.HTML,
+    )
+
+
 # ── perintah user ────────────────────────────────────────
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     u = update.effective_user
     await db.upsert_user(u.id, u.username or "")
+    if not await _require_join(update, context):
+        return
     text = (
         f"Halo {u.first_name}! 👋\n\n"
         "Selamat datang di toko produk digital.\n"
@@ -60,25 +134,22 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_produk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_join(update, context):
+        return
     products = await db.list_products(only_active=True)
     if not products:
         await update.message.reply_text("Belum ada produk. Cek lagi nanti ya.")
         return
-    rows = []
-    for p in products:
-        stock = await db.available_stock(p["id"])
-        label = f"{p['name']} — {rupiah(p['price'])}"
-        if p["delivery_type"] in ("account", "voucher"):
-            label += f" ({stock} stok)" if stock else " (habis)"
-        rows.append([InlineKeyboardButton(label, callback_data=f"view:{p['id']}")])
     await update.message.reply_text(
         "🛒 <b>Katalog Produk</b>\nPilih produk:",
-        reply_markup=InlineKeyboardMarkup(rows),
+        reply_markup=await _catalog_keyboard(products),
         parse_mode=ParseMode.HTML,
     )
 
 
 async def cb_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_join(update, context):
+        return
     q = update.callback_query
     await q.answer()
     pid = int(q.data.split(":")[1])
@@ -102,6 +173,8 @@ async def cb_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cb_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_join(update, context):
+        return
     q = update.callback_query
     await q.answer()
     products = await db.list_products(only_active=True)
@@ -120,6 +193,8 @@ async def cb_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cb_buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_join(update, context):
+        return
     q = update.callback_query
     await q.answer()
     pid = int(q.data.split(":")[1])
@@ -179,6 +254,8 @@ async def cb_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/order <order_id> — cek status order milik sendiri."""
+    if not await _require_join(update, context):
+        return
     args = context.args
     if not args:
         await update.message.reply_text("Format: /order <ID_ORDER>")
@@ -255,6 +332,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(cb_back, pattern=r"^back:"))
     app.add_handler(CallbackQueryHandler(cb_buy, pattern=r"^buy:"))
     app.add_handler(CallbackQueryHandler(cb_check, pattern=r"^check:"))
+    app.add_handler(CallbackQueryHandler(cb_checkjoin, pattern=r"^checkjoin$"))
 
     app.job_queue.run_repeating(job_expire, interval=120, first=60)
     return app
