@@ -29,6 +29,11 @@ def _pakasir(context: ContextTypes.DEFAULT_TYPE) -> PakasirClient:
     return context.application.bot_data["pakasir"]
 
 
+def esc(s: str) -> str:
+    """Escape teks buatan pengguna sebelum ditaruh di pesan parse_mode=HTML."""
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _is_admin(update: Update) -> bool:
     return update.effective_user and update.effective_user.id in cfg.admin_ids
 
@@ -40,18 +45,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         f"Halo {u.first_name}! 👋\n\n"
         "Selamat datang di toko produk digital.\n"
-        "Ketik /produk untuk melihat katalog, atau /order <ID> untuk cek status order."
+        "Ketik /produk untuk melihat katalog, atau /order [ID] untuk cek status order."
     )
     if u.id in cfg.admin_ids:
         text += (
-            "\n\n<b>Admin:</b>\n"
+            "\n\nAdmin:\n"
             "/tambahproduk — wizard tambah produk\n"
-            "/addstok <kode> — tempel stok (1 baris = 1 item)\n"
+            "/addstok [kode] — tempel stok (1 baris = 1 item)\n"
             "/produkadmin — daftar & kelola produk\n"
             "/stok · /orders\n"
-            "/aktif <kode> · /nonaktif <kode> · /hapusproduk <kode>"
+            "/aktif [kode] · /nonaktif [kode] · /hapusproduk [kode]"
         )
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(text)
 
 
 async def cmd_produk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -83,9 +88,9 @@ async def cb_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     stock = await db.available_stock(pid)
     sold_out = p["delivery_type"] in ("account", "voucher") and stock <= 0
-    desc = f"\n\n{p['description']}" if p["description"] else ""
+    desc = f"\n\n{esc(p['description'])}" if p["description"] else ""
     text = (
-        f"<b>{p['name']}</b>\n"
+        f"<b>{esc(p['name'])}</b>\n"
         f"Harga: {rupiah(p['price'])}\n"
         f"{'Stok: ' + str(stock) if p['delivery_type'] != 'file' else 'Stok: tersedia'}"
         f"{desc}"
@@ -129,7 +134,7 @@ async def cb_buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     product = await db.get_product(pid)
     caption = (
         f"🧾 <b>Order {order['order_id']}</b>\n"
-        f"{product['name']}\n"
+        f"{esc(product['name'])}\n"
         f"Nominal: {rupiah(order['amount'])}\n"
         f"Biaya admin: {rupiah(order['fee'])}\n"
         f"<b>Total bayar: {rupiah(order['total_payment'])}</b>\n\n"
@@ -201,7 +206,7 @@ async def cmd_stok(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     for p in products:
         s = await db.available_stock(p["id"])
         flag = "" if p["active"] else " [nonaktif]"
-        out.append(f"• {p['code']} — {p['name']}: {s}{flag}")
+        out.append(f"• {esc(p['code'])} — {esc(p['name'])}: {s}{flag}")
     await update.message.reply_text("\n".join(out), parse_mode=ParseMode.HTML)
 
 
@@ -215,8 +220,8 @@ async def cmd_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     out = ["<b>15 order terakhir</b>"]
     for o in rows:
         out.append(
-            f"<code>{o['order_id']}</code> {o['status']} · {o['product_name']} · "
-            f"{rupiah(o['amount'])} · @{o['username']}"
+            f"<code>{o['order_id']}</code> {o['status']} · {esc(o['product_name'])} · "
+            f"{rupiah(o['amount'])} · @{esc(o['username'])}"
         )
     await update.message.reply_text("\n".join(out), parse_mode=ParseMode.HTML)
 

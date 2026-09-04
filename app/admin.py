@@ -42,6 +42,10 @@ def _is_admin(update: Update) -> bool:
     return bool(update.effective_user) and update.effective_user.id in cfg.admin_ids
 
 
+def esc(s: str) -> str:
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 # ── wizard tambah produk ─────────────────────────────────
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not _is_admin(update):
@@ -134,8 +138,8 @@ async def add_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     await update.message.reply_text(
         f"✅ Produk <b>#{pid}</b> dibuat:\n"
-        f"• kode: <code>{np['code']}</code>\n"
-        f"• {np['name']} — {rupiah(np['price'])}\n"
+        f"• kode: <code>{esc(np['code'])}</code>\n"
+        f"• {esc(np['name'])} — {rupiah(np['price'])}\n"
         f"• jenis: {np['delivery_type']}\n\n{hint}",
         parse_mode=ParseMode.HTML,
     )
@@ -190,7 +194,7 @@ async def cmd_produkadmin(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         s = await db.available_stock(p["id"])
         flag = "🟢" if p["active"] else "🔴"
         out.append(
-            f"{flag} <code>{p['code']}</code> — {p['name']} · {rupiah(p['price'])} · "
+            f"{flag} <code>{esc(p['code'])}</code> — {esc(p['name'])} · {rupiah(p['price'])} · "
             f"{p['delivery_type']} · stok {s}"
         )
     out.append("\n/aktif &lt;kode&gt; · /nonaktif &lt;kode&gt; · /hapusproduk &lt;kode&gt;")
