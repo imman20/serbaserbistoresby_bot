@@ -1,0 +1,27 @@
+# Reverse proxy: hanya expose endpoint webhook Pakasir ke publik.
+# Pasang TLS dulu: sudo certbot --nginx -d domain-kamu.com
+
+server {
+    listen 443 ssl;
+    server_name domain-kamu.com;
+
+    ssl_certificate     /etc/letsencrypt/live/domain-kamu.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/domain-kamu.com/privkey.pem;
+
+    # Batasi ke path webhook + health saja
+    location = /pakasir/webhook {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+    location = /health {
+        proxy_pass http://127.0.0.1:8080;
+    }
+    location / { return 404; }
+}
+
+server {
+    listen 80;
+    server_name domain-kamu.com;
+    return 301 https://$host$request_uri;
+}

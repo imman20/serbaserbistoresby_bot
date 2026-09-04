@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram Bot Produk Digital (Pakasir QRIS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/opt/telegram-bot-pakasir
+ExecStart=/opt/telegram-bot-pakasir/.venv/bin/python main.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/telegram-bot-pakasir/.env
+
+[Install]
+WantedBy=multi-user.target
