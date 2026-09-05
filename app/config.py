@@ -42,8 +42,15 @@ class Config:
     sales_channel_id: str = os.getenv("SALES_CHANNEL_ID", "").strip()
 
     # Wajib join channel ini sebelum bisa pakai bot (opsional). Isi @username
-    # channel publik. Bot harus jadi admin/anggota di channel itu.
+    # (channel publik) ATAU id numerik seperti -1001234567890 (channel privat).
+    # Bot harus jadi admin di channel itu.
     required_channel: str = os.getenv("REQUIRED_CHANNEL", "").strip()
+
+    # Link yang dibuka tombol "Join Channel". Wajib diisi kalau REQUIRED_CHANNEL
+    # berupa id numerik (channel privat) — pakai link invite-nya, mis.
+    # https://t.me/+xxxxxxxxxxxx. Boleh dikosongkan kalau REQUIRED_CHANNEL sudah
+    # berupa @username channel publik (link dibuat otomatis).
+    required_channel_url_override: str = os.getenv("REQUIRED_CHANNEL_URL", "").strip()
 
     def validate(self) -> None:
         missing = [
@@ -62,7 +69,9 @@ class Config:
 
     @property
     def required_channel_url(self) -> str:
-        """Link t.me untuk tombol 'Join Channel' (hanya untuk channel @username publik)."""
+        """Link t.me untuk tombol 'Join Channel'."""
+        if self.required_channel_url_override:
+            return self.required_channel_url_override
         c = self.required_channel
         return f"https://t.me/{c.lstrip('@')}" if c.startswith("@") else ""
 

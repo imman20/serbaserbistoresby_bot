@@ -62,24 +62,67 @@ dari dashboard Pakasir → Project → Settings.
 
 | Perintah | Fungsi |
 |---|---|
-| `/tambahproduk` | wizard tanya-jawab: kode → nama → harga → jenis (akun/voucher/file) → link/deskripsi |
-| `/addstok <kode>` | tambah stok — tempel data, **satu baris satu item** |
-| `/produkadmin` | daftar semua produk + status |
+| `/tambahproduk` | wizard tanya-jawab: kode → nama → grup/varian → harga → jenis (akun/voucher/file) → link/deskripsi → cara pakai |
+| `/addstok <kode>` | tambah stok — lihat 2 format di bawah |
+| `/setcarapakai <kode>` | atur/ubah instruksi "cara pakai" yang dikirim setelah bayar |
+| `/produkadmin` | daftar semua produk + status + info grup |
 | `/aktif <kode>` · `/nonaktif <kode>` | tampilkan / sembunyikan produk dari katalog |
 | `/hapusproduk <kode>` | hapus (otomatis jadi *nonaktif* bila sudah pernah ada order) |
 | `/stok` · `/orders` | ringkasan stok · 15 order terakhir |
 
-Contoh isi stok:
+### Produk dengan pilihan durasi/varian (mis. Netflix 1/3/7 Hari)
+
+Saat `/tambahproduk` ditanya soal grup, jawab dengan `nama grup | label varian`
+(pakai **nama grup yang sama persis** untuk tiap varian), misal:
 
 ```
-/addstok netflix1p
+Netflix Sharing | 1 Hari
+Netflix Sharing | 7 Hari
+Netflix Sharing | 30 Hari
+```
+
+Ketiganya otomatis digabung jadi **satu tombol "Netflix Sharing"** di katalog;
+pembeli tap tombol itu dulu, baru muncul pilihan durasinya. Produk tanpa grup
+(ketik `-` saat ditanya) tetap tampil langsung seperti biasa.
+
+### Format `/addstok` — dua pilihan
+
+**Sederhana** (satu baris = satu item):
+```
+/addstok netflix1hari
 email1@mail.com:passA
 email2@mail.com:passB
 KODE-VOUCHER-123
 ```
 
+**Rapi / multi-baris per item** (pisahkan tiap item dengan baris `---`), cocok
+untuk format seperti "Email / Password / akses 2FA":
+```
+/addstok netflix1hari
+Email : akun1@mail.com
+Password : pass123
+akses untuk 2fa : 2fa.live/xxx
+---
+Email : akun2@mail.com
+Password : pass456
+akses untuk 2fa : 2fa.live/yyy
+```
+Tiap blok akan dikirim ke pembeli persis seperti itu (rapi, gampang di-copy).
+
 Untuk produk jenis **file** dengan satu link untuk semua pembeli, link-nya
 dimasukkan saat `/tambahproduk` — tidak perlu `/addstok`.
+
+### Cara pakai (terpisah dari deskripsi)
+
+Deskripsi tampil di **katalog** (sebelum beli); cara pakai dikirim ke pembeli
+**setelah bayar**, bersama detail akun. Atur lewat wizard, atau kapan saja:
+```
+/setcarapakai netflix1hari
+1. Login pakai email & password di atas
+2. Jangan ganti profil orang lain
+3. Kalau logout sendiri, chat admin
+```
+Kirim `/setcarapakai <kode> -` untuk mengosongkan.
 
 ## Catatan penting
 
@@ -92,4 +135,7 @@ dimasukkan saat `/tambahproduk` — tidak perlu `/addstok`.
 - **Cadangan.** Kalau webhook gagal masuk, pembeli bisa tekan "Cek status pembayaran"
   atau kirim `/order <ID>` untuk memicu verifikasi manual.
 - **Backup** file `bot.db` secara berkala (berisi stok & riwayat order).
+- **Migrasi otomatis.** Kolom baru (grup/varian, cara pakai, dst) ditambahkan otomatis ke
+  `bot.db` yang sudah ada saat bot dijalankan (`db._ensure_columns`) — data lama tidak hilang,
+  tidak perlu hapus/buat ulang database saat update kode.
 - **Skala.** SQLite cukup untuk ratusan order/hari. Kalau lebih, migrasi ke Postgres.

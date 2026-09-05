@@ -39,15 +39,53 @@ def _is_admin(update: Update) -> bool:
     return update.effective_user and update.effective_user.id in cfg.admin_ids
 
 
+async def _product_label(p) -> str:
+    label = f"{p['name']} — {rupiah(p['price'])}"
+    if p["delivery_type"] in ("account", "voucher"):
+        stock = await db.available_stock(p["id"])
+        label += f" ({stock} stok)" if stock else " (habis)"
+    return label
+
+
 async def _catalog_keyboard(products) -> InlineKeyboardMarkup:
-    rows = []
+    """Susun katalog: produk tanpa grup tampil langsung, produk dengan grup yang
+    sama (mis. beberapa pilihan durasi) digabung jadi satu tombol grup."""
+    groups: dict[str, list] = {}
+    standalone = []
     for p in products:
-        label = f"{p['name']} — {rupiah(p['price'])}"
+        if p["group_code"]:
+            groups.setdefault(p["group_code"], []).append(p)
+        else:
+            standalone.append(p)
+
+    rows = []
+    for p in standalone:
+        rows.append([InlineKeyboardButton(await _product_label(p), callback_data=f"view:{p['id']}")])
+    for group_code, members in groups.items():
+        if len(members) == 1:  # varian lain nonaktif semua -> tampil langsung, tanpa sub-menu
+            p = members[0]
+            rows.append([InlineKeyboardButton(await _product_label(p), callback_data=f"view:{p['id']}")])
+            continue
+        cheapest = min(m["price"] for m in members)
+        label = f"{members[0]['group_name']} — mulai {rupiah(cheapest)}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"group:{group_code}")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _group_keyboard(group_code: str) -> tuple[str, InlineKeyboardMarkup]:
+    """Return (nama_grup, keyboard varian) untuk sebuah grup."""
+    members = [p for p in await db.list_products(only_active=True) if p["group_code"] == group_code]
+    members.sort(key=lambda p: p["price"])
+    rows = []
+    for p in members:
+        label = f"{p['variant_label']} — {rupiah(p['price'])}"
         if p["delivery_type"] in ("account", "voucher"):
             stock = await db.available_stock(p["id"])
             label += f" ({stock} stok)" if stock else " (habis)"
         rows.append([InlineKeyboardButton(label, callback_data=f"view:{p['id']}")])
-    return InlineKeyboardMarkup(rows)
+    rows.append([InlineKeyboardButton("⬅️ Kembali", callback_data="back:list")])
+    group_name = members[0]["group_name"] if members else "Produk"
+    return group_name, InlineKeyboardMarkup(rows)
 
 
 # ── wajib join channel (opsional, aktif kalau REQUIRED_CHANNEL diisi) ────
@@ -68,11 +106,11 @@ async def _is_member(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
 
 
 def _join_keyboard() -> InlineKeyboardMarkup:
-    url = cfg.required_channel_url or f"https://t.me/{cfg.required_channel.lstrip('@')}"
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Join Channel", url=url)],
-        [InlineKeyboardButton("✅ Saya sudah join", callback_data="checkjoin")],
-    ])
+    rows = []
+    if cfg.required_channel_url:
+        rows.append([InlineKeyboardButton("📢 Join Channel", url=cfg.required_channel_url)])
+    rows.append([InlineKeyboardButton("✅ Saya sudah join", callback_data="checkjoin")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def _require_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -84,9 +122,10 @@ async def _require_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
         return True
     if update.callback_query:
         await update.callback_query.answer()
+    nama = cfg.required_channel if cfg.required_channel.startswith("@") else "kami"
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=f"Untuk memakai bot ini, join dulu channel {cfg.required_channel}, lalu tekan tombol di bawah.",
+        text=f"Untuk memakai bot ini, join dulu channel {nama} lewat tombol di bawah, lalu tekan \"Saya sudah join\".",
         reply_markup=_join_keyboard(),
     )
     return False
@@ -125,7 +164,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text += (
             "\n\nAdmin:\n"
             "/tambahproduk — wizard tambah produk\n"
-            "/addstok [kode] — tempel stok (1 baris = 1 item)\n"
+            "/addstok [kode] — tempel stok\n"
+            "/setcarapakai [kode] — atur cara pakai\n"
             "/produkadmin — daftar & kelola produk\n"
             "/stok · /orders\n"
             "/aktif [kode] · /nonaktif [kode] · /hapusproduk [kode]"
@@ -160,16 +200,37 @@ async def cb_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     stock = await db.available_stock(pid)
     sold_out = p["delivery_type"] in ("account", "voucher") and stock <= 0
     desc = f"\n\n{esc(p['description'])}" if p["description"] else ""
+    name_line = f"<b>{esc(p['name'])}</b>"
+    if p["group_code"]:
+        name_line = f"<b>{esc(p['group_name'])} — {esc(p['variant_label'])}</b>"
     text = (
-        f"<b>{esc(p['name'])}</b>\n"
+        f"{name_line}\n"
         f"Harga: {rupiah(p['price'])}\n"
         f"{'Stok: ' + str(stock) if p['delivery_type'] != 'file' else 'Stok: tersedia'}"
         f"{desc}"
     )
-    kb = [[InlineKeyboardButton("⬅️ Kembali", callback_data="back:list")]]
+    back_target = f"group:{p['group_code']}" if p["group_code"] else "back:list"
+    kb = [[InlineKeyboardButton("⬅️ Kembali", callback_data=back_target)]]
     if not sold_out:
         kb.insert(0, [InlineKeyboardButton(f"💳 Beli — {rupiah(p['price'])}", callback_data=f"buy:{pid}")])
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+
+
+async def cb_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_join(update, context):
+        return
+    q = update.callback_query
+    await q.answer()
+    group_code = q.data.split(":", 1)[1]
+    group_name, kb = await _group_keyboard(group_code)
+    if not kb.inline_keyboard[:-1]:  # cuma ada tombol "Kembali" -> semua varian nonaktif/habis
+        await q.edit_message_text("Varian produk ini sedang tidak tersedia.", reply_markup=kb)
+        return
+    await q.edit_message_text(
+        f"🛒 <b>{esc(group_name)}</b>\nPilih durasi/varian:",
+        reply_markup=kb,
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def cb_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -178,16 +239,12 @@ async def cb_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     await q.answer()
     products = await db.list_products(only_active=True)
-    rows = []
-    for p in products:
-        stock = await db.available_stock(p["id"])
-        label = f"{p['name']} — {rupiah(p['price'])}"
-        if p["delivery_type"] in ("account", "voucher"):
-            label += f" ({stock} stok)" if stock else " (habis)"
-        rows.append([InlineKeyboardButton(label, callback_data=f"view:{p['id']}")])
+    if not products:
+        await q.edit_message_text("Belum ada produk. Cek lagi nanti ya.")
+        return
     await q.edit_message_text(
         "🛒 <b>Katalog Produk</b>\nPilih produk:",
-        reply_markup=InlineKeyboardMarkup(rows),
+        reply_markup=await _catalog_keyboard(products),
         parse_mode=ParseMode.HTML,
     )
 
@@ -329,6 +386,7 @@ def build_application() -> Application:
     admin.register(app)  # /tambahproduk /addstok /produkadmin /aktif /nonaktif /hapusproduk
 
     app.add_handler(CallbackQueryHandler(cb_view, pattern=r"^view:"))
+    app.add_handler(CallbackQueryHandler(cb_group, pattern=r"^group:"))
     app.add_handler(CallbackQueryHandler(cb_back, pattern=r"^back:"))
     app.add_handler(CallbackQueryHandler(cb_buy, pattern=r"^buy:"))
     app.add_handler(CallbackQueryHandler(cb_check, pattern=r"^check:"))

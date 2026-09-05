@@ -24,7 +24,11 @@ CREATE TABLE IF NOT EXISTS products (
     price         INTEGER NOT NULL,                       -- rupiah, tanpa fee
     delivery_type TEXT NOT NULL CHECK (delivery_type IN ('account','voucher','file')),
     file_payload  TEXT DEFAULT '',                        -- dipakai bila delivery_type='file' (link/teks, stok tak terbatas)
-    active        INTEGER NOT NULL DEFAULT 1
+    active        INTEGER NOT NULL DEFAULT 1,
+    group_code    TEXT DEFAULT '',                        -- samakan nilai ini utk beberapa produk = jadi satu grup varian
+    group_name    TEXT DEFAULT '',                        -- nama grup yg tampil di katalog (mis. "Netflix Sharing")
+    variant_label TEXT DEFAULT '',                        -- label varian dlm grup (mis. "7 Hari")
+    usage_note    TEXT DEFAULT ''                          -- "cara pakai", dikirim terpisah dari deskripsi saat produk terkirim
 );
 
 CREATE TABLE IF NOT EXISTS stock_items (
@@ -68,6 +72,16 @@ CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 _conn: Optional[aiosqlite.Connection] = None
 
 
+async def _ensure_columns(conn: aiosqlite.Connection, table: str, columns: dict[str, str]) -> None:
+    """Tambahkan kolom yang belum ada — supaya database lama (sebelum fitur baru
+    ditambahkan) ikut ter-upgrade otomatis tanpa kehilangan data."""
+    async with conn.execute(f"PRAGMA table_info({table})") as cur:
+        existing = {row["name"] async for row in cur}
+    for name, decl in columns.items():
+        if name not in existing:
+            await conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
 async def connect() -> aiosqlite.Connection:
     global _conn
     if _conn is None:
@@ -76,6 +90,12 @@ async def connect() -> aiosqlite.Connection:
         await _conn.execute("PRAGMA journal_mode=WAL;")
         await _conn.execute("PRAGMA foreign_keys=ON;")
         await _conn.executescript(SCHEMA)
+        await _ensure_columns(_conn, "products", {
+            "group_code": "TEXT DEFAULT ''",
+            "group_name": "TEXT DEFAULT ''",
+            "variant_label": "TEXT DEFAULT ''",
+            "usage_note": "TEXT DEFAULT ''",
+        })
         await _conn.commit()
     return _conn
 
@@ -128,15 +148,24 @@ async def get_product_by_code(code: str) -> Optional[aiosqlite.Row]:
 async def add_product(
     code: str, name: str, price: int, delivery_type: str,
     description: str = "", file_payload: str = "",
+    group_code: str = "", group_name: str = "", variant_label: str = "", usage_note: str = "",
 ) -> int:
     db = await connect()
     cur = await db.execute(
-        "INSERT INTO products(code,name,description,price,delivery_type,file_payload) "
-        "VALUES(?,?,?,?,?,?)",
-        (code, name, description, price, delivery_type, file_payload),
+        "INSERT INTO products(code,name,description,price,delivery_type,file_payload,"
+        "group_code,group_name,variant_label,usage_note) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (code, name, description, price, delivery_type, file_payload,
+         group_code, group_name, variant_label, usage_note),
     )
     await db.commit()
     return cur.lastrowid
+
+
+async def set_usage_note(code: str, text: str) -> bool:
+    db = await connect()
+    cur = await db.execute("UPDATE products SET usage_note=? WHERE code=?", (text, code))
+    await db.commit()
+    return cur.rowcount == 1
 
 
 async def set_product_active(code: str, active: bool) -> bool:

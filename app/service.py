@@ -118,7 +118,11 @@ async def deliver_order(app: Application, order_id: str) -> bool:
     await db.mark_order_delivered(order_id)
 
     tanggal = format_tanggal_wib(order["paid_at"] or db.now())
-    detail_lines = "\n".join(f"<code>{_esc(p)}</code>" for p in payloads) or "(hubungi admin — data kosong)"
+    detail_lines = "\n\n".join(f"<pre>{_esc(p)}</pre>" for p in payloads) or "(hubungi admin — data kosong)"
+    usage_block = (
+        f"━━━━━━━━━━━━━━━━\n📖 Cara pakai:\n{_esc(product['usage_note'])}\n"
+        if product["usage_note"] else ""
+    )
 
     buyer_text = (
         f"📦 <b>PRODUK KAMU SUDAH SIAP!</b>\n"
@@ -128,6 +132,7 @@ async def deliver_order(app: Application, order_id: str) -> bool:
         f"💰 Harga: {rupiah(order['amount'])}\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"🔑 Detail:\n{detail_lines}\n"
+        f"{usage_block}"
         f"━━━━━━━━━━━━━━━━\n"
         f"📅 {tanggal}\n\n"
         f"Terima kasih! Simpan pesan ini baik-baik 🙏"
