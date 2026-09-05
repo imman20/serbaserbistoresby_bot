@@ -214,15 +214,15 @@ async def add_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 # ── stok cepat ───────────────────────────────────────────
-_ITEM_SEP = re.compile(r"^-{3,}$")
+_ITEM_SEP = re.compile(r"^(-{3,}|={3,})$")  # baris pemisah item: --- ATAU ===
 
 
 def _parse_stock_body(lines: list[str]) -> list[str]:
     """Ubah baris-baris jadi list payload.
 
-    - Kalau ADA baris pemisah "---": tiap blok di antara pemisah = SATU item
-      (boleh berisi banyak baris, mis. "Email: x\\nPassword: y").
-    - Kalau TIDAK ADA baris "---": kembali ke perilaku lama — satu baris = satu item.
+    - Kalau ADA baris pemisah "---" atau "===": tiap blok di antara pemisah = SATU
+      item (boleh berisi banyak baris, mis. "Email: x\\nPassword: y").
+    - Kalau TIDAK ADA baris pemisah: kembali ke perilaku lama — satu baris = satu item.
     """
     if any(_ITEM_SEP.match(ln.strip()) for ln in lines):
         blocks, current = [], []
@@ -248,9 +248,9 @@ async def cmd_addstok(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(
             "Format sederhana (satu baris = satu item):\n"
             "<code>/addstok KODE</code>\nemail1:pass1\nemail2:pass2\n\n"
-            "Format multi-baris rapi (pisahkan tiap item dengan baris <code>---</code>):\n"
+            "Format multi-baris rapi (pisahkan tiap item dengan baris <code>---</code> atau <code>===</code>):\n"
             "<code>/addstok KODE</code>\n"
-            "Email : akun1@mail.com\nPassword : pass123\n---\n"
+            "Email : akun1@mail.com\nPassword : pass123\n===\n"
             "Email : akun2@mail.com\nPassword : pass456",
             parse_mode=ParseMode.HTML,
         )
@@ -272,28 +272,103 @@ async def cmd_addstok(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text(f"✅ +{n} stok '{code}'. Total tersedia: {total}.")
 
 
-# ── cara pakai ───────────────────────────────────────────
+def _parse_code_and_body(raw_text: str) -> tuple[str, str] | None:
+    """Parse "/perintah KODE\\nbaris1\\nbaris2..." -> (kode, teks). None kalau kode tak ada."""
+    lines = (raw_text or "").split("\n")
+    head = lines[0].split()
+    if len(head) < 2:
+        return None
+    code = head[1].lower()
+    rest_of_head = " ".join(head[2:])
+    body = "\n".join([rest_of_head] + lines[1:]).strip() if rest_of_head else "\n".join(lines[1:]).strip()
+    return code, ("" if body == "-" else body)
+
+
+# ── cara pakai & deskripsi ───────────────────────────────
 async def cmd_setcarapakai(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_admin(update):
         return
-    lines = (update.message.text or "").split("\n")
-    head = lines[0].split()
-    if len(head) < 2:
+    parsed = _parse_code_and_body(update.message.text)
+    if parsed is None:
         await update.message.reply_text(
             "Format:\n<code>/setcarapakai KODE</code>\nbaris cara pakai 1\nbaris cara pakai 2\n...\n\n"
             "Ketik <code>/setcarapakai KODE -</code> untuk mengosongkan.",
             parse_mode=ParseMode.HTML,
         )
         return
-    code = head[1].lower()
-    rest_of_head = " ".join(head[2:])
-    body = "\n".join([rest_of_head] + lines[1:]).strip() if rest_of_head else "\n".join(lines[1:]).strip()
-    text = "" if body == "-" else body
-    ok = await db.set_usage_note(code, text)
-    if not ok:
+    code, text = parsed
+    if not await db.set_usage_note(code, text):
         await update.message.reply_text(f"Produk '{code}' tidak ada. Cek /produkadmin.")
         return
     await update.message.reply_text("✅ Cara pakai dikosongkan." if not text else "✅ Cara pakai disimpan.")
+
+
+async def cmd_editdeskripsi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_admin(update):
+        return
+    parsed = _parse_code_and_body(update.message.text)
+    if parsed is None:
+        await update.message.reply_text(
+            "Format:\n<code>/editdeskripsi KODE</code>\ndeskripsi baru di sini...\n\n"
+            "Ketik <code>/editdeskripsi KODE -</code> untuk mengosongkan.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    code, text = parsed
+    if not await db.set_description(code, text):
+        await update.message.reply_text(f"Produk '{code}' tidak ada. Cek /produkadmin.")
+        return
+    await update.message.reply_text("✅ Deskripsi dikosongkan." if not text else "✅ Deskripsi disimpan.")
+
+
+# ── lihat / hapus stok ───────────────────────────────────
+def _stock_preview(payload: str, width: int = 42) -> str:
+    first_line = payload.split("\n", 1)[0]
+    return first_line if len(first_line) <= width else first_line[: width - 1] + "…"
+
+
+async def cmd_lihatstok(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_admin(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Format: /lihatstok <kode>")
+        return
+    code = context.args[0].lower()
+    product = await db.get_product_by_code(code)
+    if product is None:
+        await update.message.reply_text(f"Produk '{code}' tidak ada.")
+        return
+    items = await db.list_stock(product["id"])
+    if not items:
+        await update.message.reply_text(f"Stok '{code}' kosong.")
+        return
+    out = [f"<b>Stok {esc(product['name'])}</b> ({len(items)} tersedia)"]
+    for i, it in enumerate(items, start=1):
+        out.append(f"{i}. <code>{esc(_stock_preview(it['payload']))}</code>")
+    out.append(f"\nHapus salah satu: <code>/hapusstok {code} &lt;nomor&gt;</code>")
+    await update.message.reply_text("\n".join(out), parse_mode=ParseMode.HTML)
+
+
+async def cmd_hapusstok(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_admin(update):
+        return
+    if len(context.args) < 2 or not context.args[1].isdigit():
+        await update.message.reply_text("Format: /hapusstok <kode> <nomor>  (lihat nomornya di /lihatstok <kode>)")
+        return
+    code, nomor = context.args[0].lower(), int(context.args[1])
+    product = await db.get_product_by_code(code)
+    if product is None:
+        await update.message.reply_text(f"Produk '{code}' tidak ada.")
+        return
+    items = await db.list_stock(product["id"])
+    if nomor < 1 or nomor > len(items):
+        await update.message.reply_text(f"Nomor tidak valid. Ada {len(items)} item (1–{len(items)}).")
+        return
+    ok = await db.delete_stock_item(items[nomor - 1]["id"])
+    total = await db.available_stock(product["id"])
+    await update.message.reply_text(
+        f"✅ Item #{nomor} dihapus. Sisa stok: {total}." if ok else "Gagal menghapus (item mungkin sudah terjual)."
+    )
 
 
 # ── lihat / ubah ─────────────────────────────────────────
@@ -346,6 +421,232 @@ async def cmd_hapusproduk(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
+# ── panel admin (tombol, tanpa perlu hafal perintah) ─────
+_TYPE_LABEL = {"account": "📧 Akun Sharing", "voucher": "🎫 Voucher/Lisensi", "file": "📁 File/Link"}
+_PAGE = 8
+
+
+async def _admin_list_view() -> tuple[str, InlineKeyboardMarkup]:
+    products = await db.list_products(only_active=False)
+    if not products:
+        return "Belum ada produk. Ketik /tambahproduk untuk membuat produk pertama.", InlineKeyboardMarkup([])
+    rows = [
+        [InlineKeyboardButton(
+            f"{'🟢' if p['active'] else '🔴'} {p['name']} — {rupiah(p['price'])}",
+            callback_data=f"adm:p:{p['id']}",
+        )]
+        for p in products
+    ]
+    text = (
+        f"⚙️ <b>Panel Admin</b> — {len(products)} produk\n"
+        "Tap produk untuk kelola (stok, deskripsi, cara pakai, aktif/nonaktif, hapus).\n"
+        "Produk baru: /tambahproduk"
+    )
+    return text, InlineKeyboardMarkup(rows)
+
+
+async def _render_product_detail(p) -> tuple[str, InlineKeyboardMarkup]:
+    pid = p["id"]
+    flag = "🟢 Aktif" if p["active"] else "🔴 Nonaktif"
+    grup_line = f"\n🔗 Grup: {esc(p['group_name'])} · {esc(p['variant_label'])}" if p["group_code"] else ""
+    has_stock_system = p["delivery_type"] in ("account", "voucher")
+    if has_stock_system:
+        avail, total = await db.stock_counts(pid)
+        stok_line = f"\n📦 Stok: {avail} tersedia (dari {total} pernah ditambah)"
+    elif p["file_payload"]:
+        stok_line = "\n📦 Stok: tak terbatas (link/teks tetap)"
+    else:
+        stok_line = "\n📦 Stok: (belum ada link — edit lewat /tambahproduk baru)"
+    desc_line = f"\n📝 Deskripsi: {esc(p['description'])}" if p["description"] else "\n📝 Deskripsi: (kosong)"
+    usage_line = (
+        f"\n📖 Cara pakai: {esc(_stock_preview(p['usage_note'], 70))}"
+        if p["usage_note"] else "\n📖 Cara pakai: (kosong)"
+    )
+    text = (
+        f"<b>{esc(p['name'])}</b> — {flag}\n"
+        f"Kode: <code>{esc(p['code'])}</code>\n"
+        f"Harga: {rupiah(p['price'])} · {_TYPE_LABEL[p['delivery_type']]}"
+        f"{grup_line}{stok_line}{desc_line}{usage_line}"
+    )
+    rows = []
+    if has_stock_system:
+        rows.append([
+            InlineKeyboardButton("📋 Lihat/Hapus Stok", callback_data=f"adm:st:{pid}:0"),
+            InlineKeyboardButton("➕ Tambah Stok", callback_data=f"adm:as:{pid}"),
+        ])
+    rows.append([
+        InlineKeyboardButton("✏️ Edit Deskripsi", callback_data=f"adm:ed:{pid}"),
+        InlineKeyboardButton("✏️ Edit Cara Pakai", callback_data=f"adm:eu:{pid}"),
+    ])
+    rows.append([
+        InlineKeyboardButton("🔴 Nonaktifkan" if p["active"] else "🟢 Aktifkan", callback_data=f"adm:tg:{pid}"),
+        InlineKeyboardButton("🗑 Hapus Produk", callback_data=f"adm:pdc:{pid}"),
+    ])
+    rows.append([InlineKeyboardButton("⬅️ Daftar Produk", callback_data="adm:list")])
+    return text, InlineKeyboardMarkup(rows)
+
+
+async def _render_stock_list(q, p, offset: int) -> None:
+    items = await db.list_stock(p["id"], limit=_PAGE, offset=offset)
+    avail, _ = await db.stock_counts(p["id"])
+    rows = [
+        [InlineKeyboardButton(f"🗑 {_stock_preview(it['payload'], 34)}", callback_data=f"adm:sdc:{p['id']}:{it['id']}")]
+        for it in items
+    ]
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton("⬅️ Sebelumnya", callback_data=f"adm:st:{p['id']}:{max(0, offset - _PAGE)}"))
+    if offset + _PAGE < avail:
+        nav.append(InlineKeyboardButton("Berikutnya ➡️", callback_data=f"adm:st:{p['id']}:{offset + _PAGE}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("⬅️ Kembali ke produk", callback_data=f"adm:p:{p['id']}")])
+    header = (
+        f"📋 <b>Stok {esc(p['name'])}</b> — {avail} tersedia\nTap item untuk hapus."
+        if items else f"📋 <b>Stok {esc(p['name'])}</b>\nStok kosong. Tambah lewat tombol ➕ Tambah Stok."
+    )
+    await q.edit_message_text(header, reply_markup=InlineKeyboardMarkup(rows), parse_mode=ParseMode.HTML)
+
+
+async def cmd_adminpanel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_admin(update):
+        return
+    text, kb = await _admin_list_view()
+    await update.message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+async def cb_admin_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    if not _is_admin(update):
+        await q.answer("Khusus admin.", show_alert=True)
+        return
+    await q.answer()
+    parts = q.data.split(":")
+    action = parts[1]
+
+    if action == "list":
+        text, kb = await _admin_list_view()
+        await q.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        return
+
+    pid = int(parts[2])
+    p = await db.get_product(pid)
+    if p is None:
+        await q.edit_message_text("Produk sudah tidak ada.")
+        return
+
+    if action == "p":
+        text, kb = await _render_product_detail(p)
+        await q.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+    elif action == "tg":
+        await db.set_product_active(p["code"], not p["active"])
+        text, kb = await _render_product_detail(await db.get_product(pid))
+        await q.edit_message_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+    elif action == "ed":
+        context.user_data["adm_pending"] = {"type": "ed", "pid": pid}
+        await q.edit_message_text(
+            f"✏️ Kirim <b>deskripsi baru</b> untuk <b>{esc(p['name'])}</b> (atau <code>-</code> untuk kosongkan).\n"
+            "Ketik /batal untuk membatalkan.", parse_mode=ParseMode.HTML,
+        )
+
+    elif action == "eu":
+        context.user_data["adm_pending"] = {"type": "eu", "pid": pid}
+        await q.edit_message_text(
+            f"✏️ Kirim <b>cara pakai baru</b> untuk <b>{esc(p['name'])}</b> (atau <code>-</code> untuk kosongkan). "
+            "Boleh beberapa baris.\nKetik /batal untuk membatalkan.", parse_mode=ParseMode.HTML,
+        )
+
+    elif action == "as":
+        if p["delivery_type"] not in ("account", "voucher"):
+            await q.answer("Produk jenis ini tidak pakai sistem stok.", show_alert=True)
+            return
+        context.user_data["adm_pending"] = {"type": "as", "pid": pid}
+        await q.edit_message_text(
+            f"➕ Kirim data stok untuk <b>{esc(p['name'])}</b> sekarang.\n"
+            "Satu baris satu item, ATAU pisahkan tiap item multi-baris dengan "
+            "<code>---</code> / <code>===</code>.\nKetik /batal untuk membatalkan.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    elif action == "st":
+        await _render_stock_list(q, p, int(parts[3]))
+
+    elif action == "sdc":
+        sid = int(parts[3])
+        item = await db.get_stock_item(sid)
+        preview = esc(_stock_preview(item["payload"], 300)) if item else "(item tidak ditemukan)"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🗑 Ya, hapus", callback_data=f"adm:sd:{pid}:{sid}")],
+            [InlineKeyboardButton("⬅️ Batal", callback_data=f"adm:st:{pid}:0")],
+        ])
+        await q.edit_message_text(f"Hapus item ini?\n\n<code>{preview}</code>", reply_markup=kb, parse_mode=ParseMode.HTML)
+
+    elif action == "sd":
+        await db.delete_stock_item(int(parts[3]))
+        await _render_stock_list(q, p, 0)
+
+    elif action == "pdc":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🗑 Ya, hapus produk ini", callback_data=f"adm:pd:{pid}")],
+            [InlineKeyboardButton("⬅️ Batal", callback_data=f"adm:p:{pid}")],
+        ])
+        await q.edit_message_text(
+            f"⚠️ Yakin hapus <b>{esc(p['name'])}</b>? Kalau produk ini pernah ada order, "
+            "produk akan dinonaktifkan saja (riwayat order tidak boleh hilang).",
+            reply_markup=kb, parse_mode=ParseMode.HTML,
+        )
+
+    elif action == "pd":
+        res = await db.delete_product(p["code"])
+        if res == "deleted":
+            text, kb = await _admin_list_view()
+            await q.edit_message_text(f"🗑️ '{esc(p['name'])}' dihapus.\n\n{text}", reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            text, kb = await _render_product_detail(await db.get_product(pid))
+            await q.edit_message_text(
+                f"Produk punya riwayat order — dinonaktifkan saja.\n\n{text}", reply_markup=kb, parse_mode=ParseMode.HTML,
+            )
+
+
+async def on_admin_pending_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Tangkap balasan teks setelah admin tap Edit Deskripsi / Edit Cara Pakai / Tambah Stok di panel."""
+    pending = context.user_data.get("adm_pending")
+    if not pending or not _is_admin(update):
+        return
+    context.user_data.pop("adm_pending", None)
+    pid = pending["pid"]
+    p = await db.get_product(pid)
+    if p is None:
+        await update.message.reply_text("Produk sudah tidak ada.")
+        return
+    txt = update.message.text.strip()
+
+    if pending["type"] == "ed":
+        await db.set_description(p["code"], "" if txt == "-" else txt)
+        await update.message.reply_text("✅ Deskripsi dikosongkan." if txt == "-" else "✅ Deskripsi disimpan.")
+    elif pending["type"] == "eu":
+        await db.set_usage_note(p["code"], "" if txt == "-" else txt)
+        await update.message.reply_text("✅ Cara pakai dikosongkan." if txt == "-" else "✅ Cara pakai disimpan.")
+    elif pending["type"] == "as":
+        payloads = _parse_stock_body(update.message.text.split("\n"))
+        if not payloads:
+            await update.message.reply_text("Tidak ada data stok yang terbaca. Coba lagi lewat tombol ➕ Tambah Stok.")
+            return
+        n = await db.add_stock(pid, payloads)
+        total = await db.available_stock(pid)
+        await update.message.reply_text(f"✅ +{n} stok. Total tersedia: {total}.")
+
+    text, kb = await _render_product_detail(await db.get_product(pid))
+    await update.message.reply_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+async def cmd_batal_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.user_data.pop("adm_pending", None):
+        await update.message.reply_text("Dibatalkan.")
+
+
 def register(app: Application) -> None:
     wizard = ConversationHandler(
         entry_points=[CommandHandler("tambahproduk", add_start)],
@@ -364,7 +665,24 @@ def register(app: Application) -> None:
     )
     app.add_handler(wizard)
     app.add_handler(CommandHandler("addstok", cmd_addstok))
+    app.add_handler(CommandHandler("lihatstok", cmd_lihatstok))
+    app.add_handler(CommandHandler("hapusstok", cmd_hapusstok))
     app.add_handler(CommandHandler("setcarapakai", cmd_setcarapakai))
+    app.add_handler(CommandHandler("editdeskripsi", cmd_editdeskripsi))
     app.add_handler(CommandHandler("produkadmin", cmd_produkadmin))
     app.add_handler(CommandHandler(["aktif", "nonaktif"], cmd_toggle))
     app.add_handler(CommandHandler("hapusproduk", cmd_hapusproduk))
+
+    # panel admin (tombol)
+    app.add_handler(CommandHandler("admin", cmd_adminpanel))
+    app.add_handler(CallbackQueryHandler(cb_admin_router, pattern=r"^adm:"))
+    app.add_handler(CommandHandler("batal", cmd_batal_admin))
+    # ditaruh di group=1: hanya diproses kalau tidak ada handler group=0 yang cocok
+    # (mis. saat wizard /tambahproduk sedang aktif, ConversationHandler yang menang).
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.User(user_id=list(cfg.admin_ids)),
+            on_admin_pending_text,
+        ),
+        group=1,
+    )

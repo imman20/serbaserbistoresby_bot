@@ -39,6 +39,10 @@ def _is_admin(update: Update) -> bool:
     return update.effective_user and update.effective_user.id in cfg.admin_ids
 
 
+_TYPE_LABEL = {"account": "📧 Akun Sharing", "voucher": "🎫 Voucher/Lisensi", "file": "📁 File/Link"}
+_CATALOG_HEADER = "🛍️ <b>Katalog Produk</b>\nTap produk untuk lihat detail & beli."
+
+
 async def _product_label(p) -> str:
     label = f"{p['name']} — {rupiah(p['price'])}"
     if p["delivery_type"] in ("account", "voucher"):
@@ -143,7 +147,7 @@ async def cb_checkjoin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await q.edit_message_text("Belum ada produk. Cek lagi nanti ya.")
         return
     await q.edit_message_text(
-        "🛒 <b>Katalog Produk</b>\nPilih produk:",
+        _CATALOG_HEADER,
         reply_markup=await _catalog_keyboard(products),
         parse_mode=ParseMode.HTML,
     )
@@ -162,12 +166,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     if u.id in cfg.admin_ids:
         text += (
-            "\n\nAdmin:\n"
+            "\n\nAdmin — /admin untuk panel lengkap (tap-tap, tanpa hafal perintah).\n"
+            "Perintah cepat lain:\n"
             "/tambahproduk — wizard tambah produk\n"
-            "/addstok [kode] — tempel stok\n"
-            "/setcarapakai [kode] — atur cara pakai\n"
-            "/produkadmin — daftar & kelola produk\n"
-            "/stok · /orders\n"
+            "/addstok [kode] · /lihatstok [kode] · /hapusstok [kode] [no]\n"
+            "/editdeskripsi [kode] · /setcarapakai [kode]\n"
+            "/produkadmin · /stok · /orders\n"
             "/aktif [kode] · /nonaktif [kode] · /hapusproduk [kode]"
         )
     await update.message.reply_text(text)
@@ -181,7 +185,7 @@ async def cmd_produk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("Belum ada produk. Cek lagi nanti ya.")
         return
     await update.message.reply_text(
-        "🛒 <b>Katalog Produk</b>\nPilih produk:",
+        _CATALOG_HEADER,
         reply_markup=await _catalog_keyboard(products),
         parse_mode=ParseMode.HTML,
     )
@@ -198,15 +202,28 @@ async def cb_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await q.edit_message_text("Produk tidak tersedia.")
         return
     stock = await db.available_stock(pid)
-    sold_out = p["delivery_type"] in ("account", "voucher") and stock <= 0
-    desc = f"\n\n{esc(p['description'])}" if p["description"] else ""
+    needs_stock = p["delivery_type"] in ("account", "voucher")
+    sold_out = needs_stock and stock <= 0
+
     name_line = f"<b>{esc(p['name'])}</b>"
+    breadcrumb = ""
     if p["group_code"]:
         name_line = f"<b>{esc(p['group_name'])} — {esc(p['variant_label'])}</b>"
+        breadcrumb = f"📂 {esc(p['group_name'])} ▸ {esc(p['variant_label'])}\n"
+
+    if needs_stock:
+        stok_line = f"✅ Tersedia · {stock} stok" if stock else "❌ Stok habis"
+    elif p["file_payload"]:
+        stok_line = "✅ Tersedia"
+    else:
+        stok_line = "⚠️ Stok belum diisi admin"
+
+    desc = f"\n\n📝 {esc(p['description'])}" if p["description"] else ""
     text = (
-        f"{name_line}\n"
-        f"Harga: {rupiah(p['price'])}\n"
-        f"{'Stok: ' + str(stock) if p['delivery_type'] != 'file' else 'Stok: tersedia'}"
+        f"{breadcrumb}{name_line}\n"
+        f"💰 Harga: {rupiah(p['price'])}\n"
+        f"{_TYPE_LABEL[p['delivery_type']]}\n"
+        f"{stok_line}"
         f"{desc}"
     )
     back_target = f"group:{p['group_code']}" if p["group_code"] else "back:list"
@@ -227,7 +244,7 @@ async def cb_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await q.edit_message_text("Varian produk ini sedang tidak tersedia.", reply_markup=kb)
         return
     await q.edit_message_text(
-        f"🛒 <b>{esc(group_name)}</b>\nPilih durasi/varian:",
+        f"📂 <b>{esc(group_name)}</b>\nPilih durasi/varian:",
         reply_markup=kb,
         parse_mode=ParseMode.HTML,
     )
@@ -243,7 +260,7 @@ async def cb_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await q.edit_message_text("Belum ada produk. Cek lagi nanti ya.")
         return
     await q.edit_message_text(
-        "🛒 <b>Katalog Produk</b>\nPilih produk:",
+        _CATALOG_HEADER,
         reply_markup=await _catalog_keyboard(products),
         parse_mode=ParseMode.HTML,
     )
@@ -383,7 +400,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("stok", cmd_stok))
     app.add_handler(CommandHandler("orders", cmd_orders))
 
-    admin.register(app)  # /tambahproduk /addstok /produkadmin /aktif /nonaktif /hapusproduk
+    admin.register(app)  # /admin (panel) + /tambahproduk /addstok /lihatstok /hapusstok /editdeskripsi
+    # /setcarapakai /produkadmin /aktif /nonaktif /hapusproduk
 
     app.add_handler(CallbackQueryHandler(cb_view, pattern=r"^view:"))
     app.add_handler(CallbackQueryHandler(cb_group, pattern=r"^group:"))

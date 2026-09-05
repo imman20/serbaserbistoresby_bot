@@ -168,6 +168,13 @@ async def set_usage_note(code: str, text: str) -> bool:
     return cur.rowcount == 1
 
 
+async def set_description(code: str, text: str) -> bool:
+    db = await connect()
+    cur = await db.execute("UPDATE products SET description=? WHERE code=?", (text, code))
+    await db.commit()
+    return cur.rowcount == 1
+
+
 async def set_product_active(code: str, active: bool) -> bool:
     db = await connect()
     cur = await db.execute(
@@ -230,6 +237,32 @@ async def add_stock(product_id: int, payloads: list[str]) -> int:
     )
     await db.commit()
     return len(payloads)
+
+
+async def list_stock(product_id: int, status: str = "available", limit: int = 200, offset: int = 0) -> list[aiosqlite.Row]:
+    db = await connect()
+    async with db.execute(
+        "SELECT * FROM stock_items WHERE product_id=? AND status=? ORDER BY id LIMIT ? OFFSET ?",
+        (product_id, status, limit, offset),
+    ) as cur:
+        return await cur.fetchall()
+
+
+async def get_stock_item(stock_id: int) -> Optional[aiosqlite.Row]:
+    db = await connect()
+    async with db.execute("SELECT * FROM stock_items WHERE id=?", (stock_id,)) as cur:
+        return await cur.fetchone()
+
+
+async def delete_stock_item(stock_id: int) -> bool:
+    """Hapus satu item stok — hanya yang berstatus 'available' (belum dipesan/terjual),
+    supaya riwayat order yang sudah terkirim tidak pernah kehilangan datanya."""
+    db = await connect()
+    cur = await db.execute(
+        "DELETE FROM stock_items WHERE id=? AND status='available'", (stock_id,)
+    )
+    await db.commit()
+    return cur.rowcount == 1
 
 
 # ── orders ───────────────────────────────────────────────

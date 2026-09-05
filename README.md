@@ -58,13 +58,30 @@ dari dashboard Pakasir → Project → Settings.
 
 **User:** `/start` · `/produk` · `/order <ID>`
 
-**Admin (semua lewat Telegram, tanpa sentuh server):**
+### Panel Admin — `/admin`
+
+Cara termudah mengelola toko: kirim `/admin`, tap produk, lalu tap tombol yang
+diinginkan — **tidak perlu hafal perintah sama sekali**:
+
+- 📋 Lihat/Hapus Stok — daftar item stok, tap salah satu untuk hapus (ada konfirmasi)
+- ➕ Tambah Stok — bot minta kamu tempel data stok berikutnya
+- ✏️ Edit Deskripsi / ✏️ Edit Cara Pakai — bot minta teks baru
+- 🟢/🔴 Aktifkan / Nonaktifkan — satu tap
+- 🗑 Hapus Produk — ada konfirmasi; otomatis jadi *nonaktif saja* bila produk itu
+  pernah punya order (riwayat transaksi tidak boleh hilang)
+
+Ketik `/batal` kapan saja untuk membatalkan aksi yang sedang berjalan (mis. batal isi deskripsi).
+
+### Perintah cepat (opsional — semua ini juga bisa lewat panel di atas)
 
 | Perintah | Fungsi |
 |---|---|
 | `/tambahproduk` | wizard tanya-jawab: kode → nama → grup/varian → harga → jenis (akun/voucher/file) → link/deskripsi → cara pakai |
 | `/addstok <kode>` | tambah stok — lihat 2 format di bawah |
-| `/setcarapakai <kode>` | atur/ubah instruksi "cara pakai" yang dikirim setelah bayar |
+| `/lihatstok <kode>` | lihat daftar stok tersedia (bernomor) |
+| `/hapusstok <kode> <nomor>` | hapus 1 item stok berdasarkan nomor dari `/lihatstok` |
+| `/editdeskripsi <kode>` | ubah deskripsi (tampil di katalog sebelum beli) |
+| `/setcarapakai <kode>` | atur/ubah instruksi "cara pakai" (dikirim setelah bayar) |
 | `/produkadmin` | daftar semua produk + status + info grup |
 | `/aktif <kode>` · `/nonaktif <kode>` | tampilkan / sembunyikan produk dari katalog |
 | `/hapusproduk <kode>` | hapus (otomatis jadi *nonaktif* bila sudah pernah ada order) |
@@ -95,8 +112,8 @@ email2@mail.com:passB
 KODE-VOUCHER-123
 ```
 
-**Rapi / multi-baris per item** (pisahkan tiap item dengan baris `---`), cocok
-untuk format seperti "Email / Password / akses 2FA":
+**Rapi / multi-baris per item** (pisahkan tiap item dengan baris `---` **atau** `===`),
+cocok untuk format seperti "Email / Password / akses 2FA":
 ```
 /addstok netflix1hari
 Email : akun1@mail.com
